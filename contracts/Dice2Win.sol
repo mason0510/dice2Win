@@ -56,12 +56,13 @@ contract Dice2Win {
     uint constant MAX_MASK_MODULO = 40;
 
     // This is a check on bet mask overflow.
-    uint constant MAX_BET_MASK = 2 ** MAX_MASK_MODULO;//最大下注
+    uint constant MAX_BET_MASK = 2 ** MAX_MASK_MODULO;//80
 
     // EVM BLOCKHASH opcode can query no further than 256 blocks into the
     // past. Given that settleBet uses block hash of placeBet as one of
     // complementary entropy sources, we cannot process bets older than this
-    // threshold. On rare occasions dice2.win croupier may fail to invoke
+    // threshold. On rare occasions dice2.win croupier may fail to invoke 极限情况加 可能无法调用
+
     // settleBet in this timespan due to technical issues or extreme Ethereum
     // congestion; such bets can be refunded via invoking refundBet.
     uint constant BET_EXPIRATION_BLOCKS = 250;
@@ -108,7 +109,7 @@ contract Dice2Win {
     mapping (uint => Bet) bets;
 
     // Croupier account.
-    address public croupier;//荷官 赌场管理人
+    address public croupier;//机器人
 
     // Events that are issued to make statistic recovery easier.
     event FailedPayment(address indexed beneficiary, uint amount);
@@ -137,6 +138,8 @@ contract Dice2Win {
         _;
     }
 
+    //I合约管理
+
     // Standard contract ownership transfer implementation,
     function approveNextOwner(address _nextOwner) external onlyOwner {
         require (_nextOwner != owner, "Cannot approve current owner.");
@@ -154,22 +157,25 @@ contract Dice2Win {
     }
 
     // See comment for "secretSigner" variable.
+    //
     function setSecretSigner(address newSecretSigner) external onlyOwner {
         secretSigner = newSecretSigner;
     }
 
-    // Change the croupier address.
+    // Change the croupier address. 庄家地址
     function setCroupier(address newCroupier) external onlyOwner {
         croupier = newCroupier;
     }
 
     // Change max bet reward. Setting this to zero effectively disables betting.
+    //值一般不能为0
     function setMaxProfit(uint _maxProfit) public onlyOwner {
         require (_maxProfit < MAX_AMOUNT, "maxProfit should be a sane number.");
         maxProfit = _maxProfit;
     }
 
     // This function is used to bump up the jackpot fund. Cannot be used to lower it.
+    //只能提高不能降低
     function increaseJackpot(uint increaseAmount) external onlyOwner {
         require (increaseAmount <= address(this).balance, "Increase amount larger than balance.");
         require (jackpotSize + lockedInBets + increaseAmount <= address(this).balance, "Not enough funds.");
@@ -177,6 +183,7 @@ contract Dice2Win {
     }
 
     // Funds withdrawal to cover costs of dice2.win operation.
+    //为了减去操作成本
     function withdrawFunds(address beneficiary, uint withdrawAmount) external onlyOwner {
         require (withdrawAmount <= address(this).balance, "Increase amount larger than balance.");
         require (jackpotSize + lockedInBets + withdrawAmount <= address(this).balance, "Not enough funds.");
@@ -191,14 +198,30 @@ contract Dice2Win {
     }
 
     /// *** Betting logic
+    //赌注状态
 
     // Bet states:
     //  amount == 0 && gambler == 0 - 'clean' (can place a bet)
     //  amount != 0 && gambler != 0 - 'active' (can be settled or refunded)
     //  amount == 0 && gambler != 0 - 'processed' (can clean storage)
     //
-    //  NOTE: Storage cleaning is not implemented in this contract version; it will be added
+//    防止过期合约污染
+    ///  NOTE: Storage cleaning is not implemented in this contract version; it will be added
     //        with the next upgrade to prevent polluting Ethereum state with expired bets.
+//发行  玩家执行
+//Function: placeBet(uint256 betMask, uint256 modulo, uint256 commitLastBlock, uint256 commit, bytes32 r, bytes32 s)
+//68702158319
+//MethodID: 0x5e83b463
+//[0]:  0000000000000000000000000000000000000000000000000000000ffef7bdef
+//[1]:  0000000000000000000000000000000000000000000000000000000000000024
+//[2]:  000000000000000000000000000000000000000000000000000000000060646a
+    //4.037541097323643e+76
+//[3]:  5943ac3b2f4292c4be207c1c3abcf3dfd4c951647667c2f8bd898eb7b431ecd1
+    //用于加密 r s
+//[4]:  089747b795303b04edcf72718e4f28c476a9825a9dbce29353ddbfe1a887eb48
+//[5]:  75162f55d5336513b611ccee2fdaa089b26641ca6f0887f68e7784ac1da823bd
+
+
 
     // Bet placing transaction - issued by the player.
     //  betMask         - bet outcomes bit mask for modulo <= MAX_MASK_MODULO,
@@ -221,52 +244,60 @@ contract Dice2Win {
     // with the blockhash. Croupier guarantees that commitLastBlock will always be not greater than
     // placeBet block number plus BET_EXPIRATION_BLOCKS. See whitepaper for details.
     //防止赌注
+    //调用赌注 类型 将最新的区块提交 提交  rs
+
+    //II下注
+
     function placeBet(uint betMask, uint modulo, uint commitLastBlock, uint commit, bytes32 r, bytes32 s) external payable {
         // Check that the bet is in 'clean' state.
-        Bet storage bet = bets[commit];
+        Bet storage bet = bets[commit];//数量 取出接收
         require (bet.gambler == address(0), "Bet should be in a 'clean' state.");
 
         // Validate input data ranges.
-        uint amount = msg.value;
+        uint amount = msg.value;//钱数
         require (modulo > 1 && modulo <= MAX_MODULO, "Modulo should be within range.");
         require (amount >= MIN_BET && amount <= MAX_AMOUNT, "Amount should be within range.");
         require (betMask > 0 && betMask < MAX_BET_MASK, "Mask should be within range.");
 
         // Check that commit is valid - it has not expired and its signature is valid.
         require (block.number <= commitLastBlock, "Commit has expired.");
-        bytes32 signatureHash = keccak256(abi.encodePacked(uint40(commitLastBlock), commit));
+//        abi.encodePacked(...) returns (bytes)：计算参数的紧密打包编码
+        bytes32 signatureHash = keccak256(abi.encodePacked(uint40(commitLastBlock), commit));//签名的哈希
+        //校验签名的合法性 无效的时候给提醒 椭圆曲线无效
         require (secretSigner == ecrecover(signatureHash, 27, r, s), "ECDSA signature is not valid.");
 
-        uint rollUnder;
-        uint mask;
-
+        uint rollUnder;//利润回滚
+        uint mask;//伪装
+        //80
         if (modulo <= MAX_MASK_MODULO) {
-            // Small modulo games specify bet outcomes via bit mask.
-            // rollUnder is a number of 1 bits in this mask (population count).
-            // This magic looking formula is an efficient way to compute population
-            // count on EVM for numbers below 2**40. For detailed proof consult
+            // Small modulo games specify bet outcomes via bit mask. //指定投注结果
+            // rollUnder is a number of 1 bits in this mask (population count). 掩码中的一位
+            // This magic looking formula is an efficient way to compute population//魔法公式
+            // count on EVM for numbers below 2**40.
+            //For detailed proof consult
             // the dice2.win whitepaper.
             rollUnder = ((betMask * POPCNT_MULT) & POPCNT_MASK) % POPCNT_MODULO;
-            mask = betMask;
+            mask = betMask;//下注的
         } else {
             // Larger modulos specify the right edge of half-open interval of
-            // winning bet outcomes.
+            // winning bet outcomes. 产出
+            //rollUnder
             require (betMask > 0 && betMask <= modulo, "High modulo range, betMask larger than modulo.");
             rollUnder = betMask;
         }
 
         // Winning amount and jackpot increase.
         uint possibleWinAmount;
-        uint jackpotFee;
+        uint jackpotFee;//累计投注
 
         (possibleWinAmount, jackpotFee) = getDiceWinAmount(amount, modulo, rollUnder);
 
         // Enforce max profit limit.
-        require (possibleWinAmount <= amount + maxProfit, "maxProfit limit violation.");
+        require (possibleWinAmount <= amount + maxProfit, "maxProfit limit violation.");//最大利润不合法
 
         // Lock funds.
-        lockedInBets += uint128(possibleWinAmount);
-        jackpotSize += uint128(jackpotFee);
+        lockedInBets += uint128(possibleWinAmount);//可能投注
+        jackpotSize += uint128(jackpotFee);//累计投注数额
 
         // Check whether contract has enough funds to process this bet.
         require (jackpotSize + lockedInBets <= address(this).balance, "Cannot afford to lose this bet.");
@@ -274,7 +305,7 @@ contract Dice2Win {
         // Record commit in logs.
         emit Commit(commit);
 
-        // Store bet parameters on blockchain.
+        // Store bet parameters on blockchain.data
         bet.amount = amount;
         bet.modulo = uint8(modulo);
         bet.rollUnder = uint8(rollUnder);
@@ -282,7 +313,7 @@ contract Dice2Win {
         bet.mask = uint40(mask);
         bet.gambler = msg.sender;
     }
-
+    //赌注
     // This is the method used to settle 99% of bets. To process a bet with a specific
     // "commit", settleBet should supply a "reveal" number that would Keccak256-hash to
     // "commit". "blockHash" is the block hash of placeBet block as seen by croupier; it
@@ -299,26 +330,26 @@ contract Dice2Win {
         require (block.number <= placeBlockNumber + BET_EXPIRATION_BLOCKS, "Blockhash can't be queried by EVM.");
         require (blockhash(placeBlockNumber) == blockHash);
 
-        // Settle bet using reveal and blockHash as entropy sources.
+        // Settle bet using reveal and blockHash as entropy sources. 结算赌注
         settleBetCommon(bet, reveal, blockHash);
     }
-
+    //数块
     // This method is used to settle a bet that was mined into an uncle block. At this
     // point the player was shown some bet outcome, but the blockhash at placeBet height
     // is different because of Ethereum chain reorg. We supply a full merkle proof of the
-    // placeBet transaction receipt to provide untamperable evidence that uncle block hash
+    // placeBet transaction receipt to provide untamperable evidence that uncle block hash 证据证明
     // indeed was present on-chain at some point.
-    //证明赌注
+    //典型的区块数字
     function settleBetUncleMerkleProof(uint reveal, uint40 canonicalBlockNumber) external onlyCroupier {
-        // "commit" for bet settlement can only be obtained by hashing a "reveal".
+        // "commit" for bet settlement can only be obtained by hashing a "reveal".//结算才能通过一个哈希提示
         uint commit = uint(keccak256(abi.encodePacked(reveal)));
 
         Bet storage bet = bets[commit];
 
-        // Check that canonical block hash can still be verified.
+        // Check that canonical block hash can still be verified. 已经被查清楚的区块哈希 典型区块加上终结的块
         require (block.number <= canonicalBlockNumber + BET_EXPIRATION_BLOCKS, "Blockhash can't be queried by EVM.");
 
-        // Verify placeBet receipt.
+        // Verify placeBet receipt.//校验位置
         requireCorrectReceipt(4 + 32 + 32 + 4);
 
         // Reconstruct canonical & uncle block hashes from a receipt merkle proof, verify them.
@@ -427,7 +458,7 @@ contract Dice2Win {
         lockedInBets -= uint128(diceWinAmount);
         jackpotSize -= uint128(jackpotFee);
 
-        // Send the refund.
+        // Send the refund. 退还补偿
         sendFunds(bet.gambler, amount, amount);
     }
 
@@ -437,18 +468,20 @@ contract Dice2Win {
         require (0 < rollUnder && rollUnder <= modulo, "Win probability out of range.");
 
         jackpotFee = amount >= MIN_JACKPOT_BET ? JACKPOT_FEE : 0;
-
+        //百分比之一
         uint houseEdge = amount * HOUSE_EDGE_PERCENT / 100;
 
         if (houseEdge < HOUSE_EDGE_MINIMUM_AMOUNT) {
             houseEdge = HOUSE_EDGE_MINIMUM_AMOUNT;
         }
-
+        //要求庄家盈利
         require (houseEdge + jackpotFee <= amount, "Bet doesn't even cover house edge.");
-        winAmount = (amount - houseEdge - jackpotFee) * modulo / rollUnder;
+        //盈利的利润
+   winAmount = (amount - houseEdge - jackpotFee) * modulo / rollUnder;
     }
 
     // Helper routine to process the payment.
+    //受益人 数额 成就log数额
     function sendFunds(address beneficiary, uint amount, uint successLogAmount) private {
         if (beneficiary.send(amount)) {
             emit Payment(beneficiary, successLogAmount);
@@ -457,11 +490,13 @@ contract Dice2Win {
         }
     }
 
-    // This are some constants making O(1) population count in placeBet possible.
+    // This are some constants making O(1) population count in placeBet possible.//一些常量是0 或者1 成为技术可能性工具
     // See whitepaper for intuition and proofs behind it.
     //要点多元
+    //多元
     uint constant POPCNT_MULT = 0x0000000000002000000000100000000008000000000400000000020000000001;
     //要点mask
+    //掩护
     uint constant POPCNT_MASK = 0x0001041041041041041041041041041041041041041041041041041041041041;
     //要点 mudulo
     uint constant POPCNT_MODULO = 0x3F;
@@ -552,65 +587,77 @@ contract Dice2Win {
     }
 
 
-    // Helper to check the placeBet receipt. "offset" is the location of the proof beginning in the calldata.
+    // Helper to check the placeBet receipt. "offset" is the location of the proof beginning in the calldata.开始位置
+    //帮助检查赌注
     // RLP layout: [triePath, str([status, cumGasUsed, bloomFilter, [[address, [topics], data]])]
     function requireCorrectReceipt(uint offset) view private {
-        uint leafHeaderByte; assembly { leafHeaderByte := byte(0, calldataload(offset)) }
-
+        //定义赋值
+        uint leafHeaderByte;//头部字节
+        assembly { leafHeaderByte := byte(0, calldataload(offset)) }
+        //判断0xf7 大于55个字节 一个字符一般两个字节 55位长度
         require (leafHeaderByte >= 0xf7, "Receipt leaf longer than 55 bytes.");
         offset += leafHeaderByte - 0xf6;
+        //内码高字节范围0xa1--0xf7 内低字节码范围0xa1--0xfe 小路头部字节
 
-        uint pathHeaderByte; assembly { pathHeaderByte := byte(0, calldataload(offset)) }
 
+        uint pathHeaderByte;
+        assembly { pathHeaderByte := byte(0, calldataload(offset)) }//从指定位置调用函数
         if (pathHeaderByte <= 0x7f) {
             offset += 1;
 
         } else {
+            //二进制字符串
             require (pathHeaderByte >= 0x80 && pathHeaderByte <= 0xb7, "Path is an RLP string.");
             offset += pathHeaderByte - 0x7f;
         }
 
-        uint receiptStringHeaderByte; assembly { receiptStringHeaderByte := byte(0, calldataload(offset)) }
+
+            //收到的字符串总是字符串 并且小于64k 否则不接受
+        uint receiptStringHeaderByte;
+        assembly { receiptStringHeaderByte := byte(0, calldataload(offset)) }
         require (receiptStringHeaderByte == 0xb9, "Receipt string is always at least 256 bytes long, but less than 64k.");
         offset += 3;
 
+            //同样的头部字节也是类似
         uint receiptHeaderByte; assembly { receiptHeaderByte := byte(0, calldataload(offset)) }
         require (receiptHeaderByte == 0xf9, "Receipt is always at least 256 bytes long, but less than 64k.");
         offset += 3;
-
+        //状态字节是0x1 16机制编码 第一个数字是1
         uint statusByte; assembly { statusByte := byte(0, calldataload(offset)) }
         require (statusByte == 0x1, "Status should be success.");
         offset += 1;
 
+            //附加gas头部字节
         uint cumGasHeaderByte; assembly { cumGasHeaderByte := byte(0, calldataload(offset)) }
         if (cumGasHeaderByte <= 0x7f) {
             offset += 1;
 
         } else {
+            //累加的gas是一个rlp字符
             require (cumGasHeaderByte >= 0x80 && cumGasHeaderByte <= 0xb7, "Cumulative gas is an RLP string.");
             offset += cumGasHeaderByte - 0x7f;
         }
-
+        //开花头部
         uint bloomHeaderByte; assembly { bloomHeaderByte := byte(0, calldataload(offset)) }
         require (bloomHeaderByte == 0xb9, "Bloom filter is always 256 bytes long.");
         offset += 256 + 3;
-
+        //log的列表头部字节 256字节
         uint logsListHeaderByte; assembly { logsListHeaderByte := byte(0, calldataload(offset)) }
         require (logsListHeaderByte == 0xf8, "Logs list is less than 256 bytes long.");
         offset += 2;
-
+        //log256个字节
         uint logEntryHeaderByte; assembly { logEntryHeaderByte := byte(0, calldataload(offset)) }
         require (logEntryHeaderByte == 0xf8, "Log entry is less than 256 bytes long.");
         offset += 2;
-
+        //地址是20比特长
         uint addressHeaderByte; assembly { addressHeaderByte := byte(0, calldataload(offset)) }
         require (addressHeaderByte == 0x94, "Address is 20 bytes long.");
-
+        //Log地址等于唯一地址  求恶化 区域加上11 等同于storage
         uint logAddress; assembly { logAddress := and(calldataload(sub(offset, 11)), 0xffffffffffffffffffffffffffffffffffffffff) }
         require (logAddress == uint(address(this)));
     }
 
-    // Memory copy.
+    // Memory copy. 内存拷贝
     function memcpy(uint dest, uint src, uint len) pure private {
         // Full 32 byte words
         for(; len >= 32; len -= 32) {
@@ -618,7 +665,7 @@ contract Dice2Win {
             dest += 32; src += 32;
         }
 
-        // Remaining bytes
+        // Remaining bytes 余下的字节 乘方运算
         uint mask = 256 ** (32 - len) - 1;
         assembly {
             let srcpart := and(mload(src), not(mask))
@@ -626,4 +673,9 @@ contract Dice2Win {
             mstore(dest, or(destpart, srcpart))
         }
     }
+
+    //总结 字面量 操作符 mstore mload 大概意思是
+
+
+
 }
